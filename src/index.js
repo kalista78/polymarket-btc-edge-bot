@@ -429,12 +429,12 @@ async function maybeTakeProfitPositions({ currentPrice }) {
     const exitResult = await placeOrder({
       tokenId: trade.tokenId,
       price: bestBid,
-      maxPrice: bestBid,
+      maxPrice: Math.max(0.01, bestBid - 0.02),
       size: shares,
       usdcAmount: shares,
       side: trade.side,
       orderSide: "SELL",
-      orderTypeOverride: "FOK",
+      orderTypeOverride: "FAK",
     });
 
     if (!exitResult || exitResult.skipped) {
