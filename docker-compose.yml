@@ -1,17 +1,19 @@
-name: knx-polymarket
+name: polybot
 
 services:
   bot:
-    container_name: knx-polymarket-bot
+    container_name: polybot
     build:
       context: .
       dockerfile: Dockerfile
-    image: knx-polymarket-bot:latest
+    image: polybot:latest
     restart: unless-stopped
     env_file:
       - .env
-    mem_limit: 768m
-    cpus: 0.75
+    volumes:
+      - ./data:/app/data
+    mem_limit: 512m
+    cpus: 0.5
     logging:
       driver: json-file
       options:

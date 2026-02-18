@@ -19,8 +19,13 @@
   "type": "commonjs",
   "dependencies": {
     "@ethersproject/wallet": "^5.8.0",
+    "@polymarket/builder-relayer-client": "^0.0.8",
+    "@polymarket/builder-signing-sdk": "^0.0.8",
     "@polymarket/clob-client": "^5.2.3",
     "dotenv": "^16.4.7",
+    "https-proxy-agent": "^7.0.6",
+    "undici": "^6.21.1",
+    "viem": "^2.46.2",
     "ws": "^8.19.0"
   }
 }

@@ -18,6 +18,7 @@ class TelegramBot {
     this.timer = null;
     this.onCommand = null;
     this.rejectedChats = new Set();
+    this.pollInFlight = false;
   }
 
   apiUrl(method) {
@@ -112,6 +113,8 @@ class TelegramBot {
 
   async pollOnce() {
     if (!this.enabled) return;
+    if (this.pollInFlight) return;
+    this.pollInFlight = true;
 
     try {
       const data = await this.request("getUpdates", {
@@ -127,6 +130,8 @@ class TelegramBot {
       }
     } catch (err) {
       log.warn(TAG, `pollOnce failed: ${err.message}`);
+    } finally {
+      this.pollInFlight = false;
     }
   }
 

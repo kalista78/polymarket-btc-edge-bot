@@ -1,8 +1,12 @@
 .git
 .gitignore
 node_modules
-.env
 paper-trades.json
 paper-trades.pre-*.json
+live-trades.json
 *.log
 npm-debug.log*
+data
+measure-*.js
+analyze-*.js
+live-preflight.js

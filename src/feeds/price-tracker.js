@@ -5,38 +5,62 @@ const TAG = "PRICE";
 
 class PriceTracker {
   constructor() {
-    // Rolling buffer of { price, timestamp } for volatility calc
+    // Rolling buffers of { price, timestampMs } for volatility calc
     this.binancePrices = [];
+    this.chainlinkPrices = [];
     this.currentBinancePrice = null;
     this.currentChainlinkPrice = null;
+    this.lastBinanceTs = 0;
+    this.lastChainlinkTs = 0;
 
     // Start prices keyed by window timestamp (unix seconds, multiple of 300)
     this.startPrices = new Map();
+    // Candle cache keyed by window timestamp -> { open, close }
+    this.windowCandles = new Map();
 
     // Cached volatility
     this._cachedVol = null;
     this._volCacheTime = 0;
+    this._volCacheWindowTs = null;
+    this._lastVolDetails = null;
 
     // Track which windows we've already fetched
     this._fetchedWindows = new Set();
     this._fetchingWindows = new Set();
   }
 
-  onBinancePrice({ price, timestamp }) {
-    this.currentBinancePrice = price;
-    this.binancePrices.push({ price, timestamp });
+  normalizeTimestamp(timestamp) {
+    const n = Number(timestamp);
+    if (!Number.isFinite(n) || n <= 0) return Date.now();
+    // Some feeds emit unix seconds; normalize to ms.
+    return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+  }
 
-    // Trim to vol window
+  trimPriceBuffer(buffer) {
     const cutoff = Date.now() - config.volWindowSec * 1000;
-    while (this.binancePrices.length > 0 && this.binancePrices[0].timestamp < cutoff) {
-      this.binancePrices.shift();
+    while (buffer.length > 0 && buffer[0].timestamp < cutoff) {
+      buffer.shift();
     }
+  }
 
+  pushPrice(buffer, { price, timestamp }) {
+    const p = Number(price);
+    if (!Number.isFinite(p) || p <= 0) return;
+    buffer.push({ price: p, timestamp: this.normalizeTimestamp(timestamp) });
+    this.trimPriceBuffer(buffer);
     this._cachedVol = null;
   }
 
+  onBinancePrice({ price, timestamp }) {
+    this.currentBinancePrice = Number(price);
+    this.lastBinanceTs = this.normalizeTimestamp(timestamp);
+    this.pushPrice(this.binancePrices, { price, timestamp: this.lastBinanceTs });
+  }
+
   onChainlinkPrice({ price, timestamp }) {
-    this.currentChainlinkPrice = price;
+    this.currentChainlinkPrice = Number(price);
+    this.lastChainlinkTs = this.normalizeTimestamp(timestamp);
+    this.pushPrice(this.chainlinkPrices, { price, timestamp: this.lastChainlinkTs });
   }
 
   /**
@@ -68,6 +92,10 @@ class PriceTracker {
           this.startPrices.set(candle.time, candle.open);
           this._fetchedWindows.add(candle.time);
         }
+        this.windowCandles.set(candle.time, {
+          open: Number(candle.open),
+          close: Number(candle.close),
+        });
       }
 
       const price = this.startPrices.get(windowTs);
@@ -82,6 +110,12 @@ class PriceTracker {
         const keys = [...this.startPrices.keys()].sort((a, b) => a - b);
         for (let i = 0; i < keys.length - 10; i++) {
           this.startPrices.delete(keys[i]);
+        }
+      }
+      if (this.windowCandles.size > 20) {
+        const keys = [...this.windowCandles.keys()].sort((a, b) => a - b);
+        for (let i = 0; i < keys.length - 20; i++) {
+          this.windowCandles.delete(keys[i]);
         }
       }
 
@@ -114,6 +148,10 @@ class PriceTracker {
       const match = results.find((r) => r.startTime === targetStart);
 
       if (match) {
+        this.windowCandles.set(windowTs, {
+          open: Number(match.openPrice),
+          close: Number(match.closePrice),
+        });
         return {
           openPrice: match.openPrice,
           closePrice: match.closePrice,
@@ -144,6 +182,10 @@ class PriceTracker {
       const candles = data.candles || [];
       const candle = candles.find((c) => c.time === windowTs);
       if (!candle) return null;
+      this.windowCandles.set(windowTs, {
+        open: Number(candle.open),
+        close: Number(candle.close),
+      });
 
       return {
         openPrice: candle.open,
@@ -158,7 +200,31 @@ class PriceTracker {
   }
 
   getCurrentPrice() {
-    return this.currentBinancePrice;
+    const source = this.getCurrentPriceSource();
+    if (source === "chainlink") return this.currentChainlinkPrice;
+    if (source === "binance") return this.currentBinancePrice;
+    return null;
+  }
+
+  getCurrentPriceSource() {
+    const chainlinkFresh = Number.isFinite(this.currentChainlinkPrice) &&
+      this.lastChainlinkTs > 0 &&
+      (Date.now() - this.lastChainlinkTs) <= config.priceStaleMs;
+    const binanceFresh = Number.isFinite(this.currentBinancePrice) &&
+      this.lastBinanceTs > 0 &&
+      (Date.now() - this.lastBinanceTs) <= config.priceStaleMs;
+
+    if (config.priceSource === "chainlink") {
+      return chainlinkFresh ? "chainlink" : "none";
+    }
+    if (config.priceSource === "binance") {
+      return binanceFresh ? "binance" : "none";
+    }
+
+    // auto mode: prefer Chainlink (Polymarket-native), fallback to Binance.
+    if (chainlinkFresh) return "chainlink";
+    if (binanceFresh) return "binance";
+    return "none";
   }
 
   getChainlinkPrice() {
@@ -167,6 +233,23 @@ class PriceTracker {
 
   getStartPrice(windowTs) {
     return this.startPrices.get(windowTs) || null;
+  }
+
+  getWindowCandle(windowTs) {
+    return this.windowCandles.get(windowTs) || null;
+  }
+
+  getLastCompletedRoundSigmaPerSec(currentWindowTs) {
+    const prevWindowTs = currentWindowTs - config.windowDurationSec;
+    const candle = this.getWindowCandle(prevWindowTs);
+    if (!candle || !candle.open || !candle.close || candle.open <= 0 || candle.close <= 0) {
+      return null;
+    }
+
+    const absLogMove = Math.abs(Math.log(candle.close / candle.open));
+    const sigmaPerSec = absLogMove / Math.sqrt(config.windowDurationSec);
+    if (!Number.isFinite(sigmaPerSec) || sigmaPerSec <= 0) return null;
+    return sigmaPerSec;
   }
 
   getCurrentWindowTs() {
@@ -184,52 +267,99 @@ class PriceTracker {
     return this.getTimeRemainingMs() / 1000;
   }
 
+  getVolatilitySeries() {
+    if (config.priceSource === "chainlink") {
+      return { source: "chainlink", prices: this.chainlinkPrices };
+    }
+    if (config.priceSource === "binance") {
+      return { source: "binance", prices: this.binancePrices };
+    }
+
+    // auto mode: prefer Chainlink if we have enough points for realized vol.
+    if (this.chainlinkPrices.length >= 5) {
+      return { source: "chainlink", prices: this.chainlinkPrices };
+    }
+    return { source: "binance", prices: this.binancePrices };
+  }
+
   /**
-   * Calculate per-second sigma from Binance price samples for Brownian motion model.
+   * Calculate per-second sigma from selected signal source samples.
    */
-  getVolatility() {
-    if (this._cachedVol !== null && Date.now() - this._volCacheTime < 1000) {
+  getVolatility(currentWindowTs = this.getCurrentWindowTs()) {
+    if (
+      this._cachedVol !== null &&
+      this._volCacheWindowTs === currentWindowTs &&
+      Date.now() - this._volCacheTime < 1000
+    ) {
       return this._cachedVol;
     }
 
-    const prices = this.binancePrices;
+    const { source: volSource, prices } = this.getVolatilitySeries();
+    let microSigma = 1.07e-4;
+
     if (prices.length < 10) {
-      return 1.07e-4; // default ~60% annualized
+      microSigma = 1.07e-4; // default ~60% annualized
+    } else {
+      const returns = [];
+      for (let i = 1; i < prices.length; i++) {
+        const dt = (prices[i].timestamp - prices[i - 1].timestamp) / 1000;
+        if (dt <= 0 || dt > 60) continue;
+        const logReturn = Math.log(prices[i].price / prices[i - 1].price);
+        returns.push({ logReturn, dt });
+      }
+
+      if (returns.length >= 5) {
+        // Realized variance estimator in per-second units.
+        const totalTime = returns.reduce((s, r) => s + r.dt, 0);
+        const sumSqReturns = returns.reduce((s, r) => s + (r.logReturn * r.logReturn), 0);
+        const realizedVarPerSec = totalTime > 0 ? sumSqReturns / totalTime : 1.07e-4 * 1.07e-4;
+
+        // EWMA to avoid under-reacting after volatility shocks.
+        const lambda = 0.94;
+        let ewmaVarPerSec = realizedVarPerSec;
+        for (const r of returns) {
+          const instVarPerSec = (r.logReturn * r.logReturn) / r.dt;
+          ewmaVarPerSec = lambda * ewmaVarPerSec + (1 - lambda) * instVarPerSec;
+        }
+
+        const conservativeVar = Math.max(realizedVarPerSec, ewmaVarPerSec);
+        microSigma = Math.sqrt(conservativeVar);
+      }
     }
+    microSigma = Math.max(config.minSigmaPerSec, Math.min(config.maxSigmaPerSec, microSigma));
 
-    const returns = [];
-    for (let i = 1; i < prices.length; i++) {
-      const dt = (prices[i].timestamp - prices[i - 1].timestamp) / 1000;
-      if (dt <= 0 || dt > 60) continue;
-      const logReturn = Math.log(prices[i].price / prices[i - 1].price);
-      returns.push({ logReturn, dt });
+    // Blend with the completed previous 5m candle move to reflect recent regime shifts.
+    const roundSigmaRaw = this.getLastCompletedRoundSigmaPerSec(currentWindowTs);
+    const roundSigma = Number.isFinite(roundSigmaRaw)
+      ? Math.max(config.minSigmaPerSec, Math.min(config.maxSigmaPerSec, roundSigmaRaw))
+      : null;
+    const blend = Math.max(0, Math.min(1, config.roundVolBlend));
+
+    let blendedSigma = microSigma;
+    if (roundSigma !== null) {
+      blendedSigma = Math.sqrt((1 - blend) * microSigma * microSigma + blend * roundSigma * roundSigma);
+      const roundFloor = roundSigma * config.roundVolFloorMultiplier;
+      blendedSigma = Math.max(blendedSigma, roundFloor);
     }
-
-    if (returns.length < 5) {
-      return Math.max(config.minSigmaPerSec, Math.min(config.maxSigmaPerSec, 1.07e-4));
-    }
-
-    // Realized variance estimator in per-second units.
-    const totalTime = returns.reduce((s, r) => s + r.dt, 0);
-    const sumSqReturns = returns.reduce((s, r) => s + (r.logReturn * r.logReturn), 0);
-    const realizedVarPerSec = totalTime > 0 ? sumSqReturns / totalTime : 1.07e-4 * 1.07e-4;
-
-    // EWMA to avoid under-reacting after volatility shocks.
-    const lambda = 0.94;
-    let ewmaVarPerSec = realizedVarPerSec;
-    for (const r of returns) {
-      const instVarPerSec = (r.logReturn * r.logReturn) / r.dt;
-      ewmaVarPerSec = lambda * ewmaVarPerSec + (1 - lambda) * instVarPerSec;
-    }
-
-    const conservativeVar = Math.max(realizedVarPerSec, ewmaVarPerSec);
-    const sigmaPerSec = Math.sqrt(conservativeVar);
-    const clamped = Math.max(config.minSigmaPerSec, Math.min(config.maxSigmaPerSec, sigmaPerSec));
+    const clamped = Math.max(config.minSigmaPerSec, Math.min(config.maxSigmaPerSec, blendedSigma));
 
     this._cachedVol = clamped;
     this._volCacheTime = Date.now();
+    this._volCacheWindowTs = currentWindowTs;
+    this._lastVolDetails = {
+      windowTs: currentWindowTs,
+      volPriceSource: volSource,
+      microSigmaPerSec: microSigma,
+      roundSigmaPerSec: roundSigma,
+      blendedSigmaPerSec: clamped,
+      roundVolBlend: blend,
+    };
 
     return clamped;
+  }
+
+  getVolatilityDetails() {
+    return this._lastVolDetails;
   }
 }
 

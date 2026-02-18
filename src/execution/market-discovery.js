@@ -52,6 +52,22 @@ class MarketDiscovery {
     return null;
   }
 
+  classifyOutcomeLabel(label) {
+    const normalized = String(label || "").trim().toLowerCase();
+    if (!normalized) return null;
+
+    const upWords = ["up", "yes", "above", "higher", "over", "long", "bull"];
+    const downWords = ["down", "no", "below", "lower", "under", "short", "bear"];
+
+    if (upWords.includes(normalized)) return "up";
+    if (downWords.includes(normalized)) return "down";
+
+    // Fallback for labels like "Will BTC close higher?" / "Bearish"
+    if (upWords.some((w) => normalized.includes(w))) return "up";
+    if (downWords.some((w) => normalized.includes(w))) return "down";
+    return null;
+  }
+
   async fetchFeeRateBps(tokenId) {
     if (!tokenId) return null;
 
@@ -149,10 +165,10 @@ class MarketDiscovery {
       let downTokenId = null;
 
       for (let i = 0; i < outcomes.length; i++) {
-        const outcome = outcomes[i].toLowerCase();
-        if (outcome === "up" || outcome === "yes") {
+        const side = this.classifyOutcomeLabel(outcomes[i]);
+        if (side === "up") {
           upTokenId = tokenIds[i];
-        } else if (outcome === "down" || outcome === "no") {
+        } else if (side === "down") {
           downTokenId = tokenIds[i];
         }
       }

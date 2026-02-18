@@ -2,6 +2,7 @@ const WebSocket = require("ws");
 const EventEmitter = require("events");
 const config = require("../config");
 const log = require("../utils/logger");
+const { getWsAgent } = require("../utils/proxy");
 
 const TAG = "RTDS";
 
@@ -22,13 +23,17 @@ class RtdsClient extends EventEmitter {
     this.intentionalClose = false;
     log.info(TAG, "Connecting to Polymarket RTDS...");
 
-    this.ws = new WebSocket(config.rtdsUrl, {
+    const wsOpts = {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         Origin: "https://polymarket.com",
       },
-    });
+    };
+    const agent = getWsAgent();
+    if (agent) wsOpts.agent = agent;
+
+    this.ws = new WebSocket(config.rtdsUrl, wsOpts);
 
     this.ws.on("open", () => {
       log.info(TAG, "Connected");
