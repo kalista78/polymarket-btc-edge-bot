@@ -674,10 +674,8 @@ async function main() {
 
   rtds.connect();
 
-  // Start candle polling (Polymarket's own chainlink-candles = resolution source of truth)
-  if (config.priceSource === "candle" || config.priceSource === "auto") {
-    priceTracker.startCandlePolling();
-  }
+  // Always poll candles — needed for start prices and round volatility regardless of signal source
+  priceTracker.startCandlePolling();
 
   log.info(TAG, "Waiting for price data...");
   await new Promise((resolve) => {
