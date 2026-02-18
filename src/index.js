@@ -438,11 +438,30 @@ async function maybeTakeProfitPositions({ currentPrice }) {
     });
 
     if (!exitResult || exitResult.skipped) {
-      trade.lastTakeProfitError = exitResult?.reason || "unknown";
+      const reason = exitResult?.reason || "unknown";
+
+      // If token balance is zero, the position is already closed (sold on UI or fill not tracked).
+      // Mark resolved so we stop retrying.
+      if (reason === "no_token_balance") {
+        trade.resolved = true;
+        trade.resolvedAt = new Date().toISOString();
+        trade.closedEarly = true;
+        trade.exitReason = "no_token_balance";
+        trade.won = false;
+        trade.pnl = 0;
+        saveTrades(tradesData);
+        log.warn(
+          TAG,
+          `Take-profit: no token balance for ${trade.side} window=${trade.windowTs} — marking resolved (position already closed)`
+        );
+        continue;
+      }
+
+      trade.lastTakeProfitError = reason;
       saveTrades(tradesData);
       log.warn(
         TAG,
-        `Take-profit exit skipped (${trade.side} window=${trade.windowTs}): ${exitResult?.reason || "unknown"}`
+        `Take-profit exit skipped (${trade.side} window=${trade.windowTs}): ${reason}`
       );
       continue;
     }
