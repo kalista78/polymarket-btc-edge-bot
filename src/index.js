@@ -546,7 +546,7 @@ async function main() {
     TAG,
     `Risk: max ${openPosLimitLabel} open / max daily loss $${config.maxDailyLossUsdc} / max round loss $${config.maxRoundLossUsdc}`
   );
-  log.info(TAG, `Hedge balance: match opposite-side size when hedging`);
+  log.info(TAG, `Per-side cost cap: $${config.maxRoundLossUsdc} per side per round | same-side re-entry min edge: 25%`);
   if (!config.paperTrade) {
     log.warn(
       TAG,
@@ -869,17 +869,27 @@ async function tick(priceTracker, marketDiscovery) {
     }
   }
 
-  // Hedge balance: when both sides active, match the last opposite-side trade's size
-  const oppSide = edge.side === "Up" ? "Down" : "Up";
-  const oppTrades = windowTrades.filter((t) => t.side === oppSide);
-  if (oppTrades.length > 0) {
-    const lastOppCost = oppTrades[oppTrades.length - 1].cost;
-    if (Math.abs(targetBetUsdc - lastOppCost) >= 0.01) {
-      log.info(TAG, `Hedge balance: ${edge.side} bet $${targetBetUsdc.toFixed(2)} -> $${lastOppCost.toFixed(2)} (matching last ${oppSide} trade)`);
-      targetBetUsdc = round2(lastOppCost);
-      edge = detectEdge(fairValue, books, market.feeRateBps, targetBetUsdc, profile);
-      if (!edge) return;
+  // Per-side cost cap: each side's total cost in the window cannot exceed MAX_ROUND_LOSS_USDC.
+  // This prevents over-investment even when hedging makes the combined worst-case small.
+  const currentRisk = summarizeRoundRisk(windowTrades);
+  const mySideCost = edge.side === "Up" ? currentRisk.upCost : currentRisk.downCost;
+  const projectedSideCost = mySideCost + targetBetUsdc;
+  if (projectedSideCost > config.maxRoundLossUsdc) {
+    const headroom = round2(config.maxRoundLossUsdc - mySideCost);
+    if (headroom < config.minPositionSizeUsdc) {
+      log.info(TAG, `Skip trade by per-side cap: ${edge.side} cost $${mySideCost.toFixed(2)} + $${targetBetUsdc.toFixed(2)} > cap $${config.maxRoundLossUsdc.toFixed(2)} (headroom $${headroom.toFixed(2)})`);
+      return;
     }
+    log.info(TAG, `Per-side cap: ${edge.side} bet $${targetBetUsdc.toFixed(2)} -> $${headroom.toFixed(2)} (side cost $${mySideCost.toFixed(2)} + cap $${config.maxRoundLossUsdc.toFixed(2)})`);
+    targetBetUsdc = headroom;
+    edge = detectEdge(fairValue, books, market.feeRateBps, targetBetUsdc, profile);
+    if (!edge) return;
+  }
+
+  // Same-side re-entry: require minimum 25% edge for 2nd+ trade on same side
+  if (sameSideTrades.length >= 1 && edge.edgePct < 0.25) {
+    log.info(TAG, `Skip same-side re-entry: ${edge.side} trade #${sameSideTrades.length + 1} edge ${(edge.edgePct * 100).toFixed(1)}% < 25% min for re-entry`);
+    return;
   }
 
   // Round-level risk cap: allow gross exposure to grow only when hedged enough
