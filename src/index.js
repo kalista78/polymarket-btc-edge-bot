@@ -869,9 +869,31 @@ async function tick(priceTracker, marketDiscovery) {
     }
   }
 
+  // Hedge share-match: when entering opposite side, match the opposite side's share count
+  const currentRisk = summarizeRoundRisk(windowTrades);
+  const oppShares = edge.side === "Up" ? currentRisk.downShares : currentRisk.upShares;
+  const myShares = edge.side === "Up" ? currentRisk.upShares : currentRisk.downShares;
+  if (oppShares > 0) {
+    const deficit = Math.max(0, oppShares - myShares);
+    if (deficit <= 0) {
+      log.info(TAG, `Skip hedge: ${edge.side} already has ${myShares.toFixed(1)} shares >= opp ${oppShares.toFixed(1)}`);
+      return;
+    }
+    const matchBet = round2(deficit * edge.marketPrice);
+    if (matchBet < config.minPositionSizeUsdc) {
+      log.info(TAG, `Skip hedge: share-match bet $${matchBet.toFixed(2)} < min $${config.minPositionSizeUsdc}`);
+      return;
+    }
+    if (Math.abs(targetBetUsdc - matchBet) >= 0.01) {
+      log.info(TAG, `Hedge share-match: ${edge.side} bet $${targetBetUsdc.toFixed(2)} -> $${matchBet.toFixed(2)} (${deficit.toFixed(1)} shares @ ${edge.marketPrice.toFixed(3)})`);
+      targetBetUsdc = matchBet;
+      edge = detectEdge(fairValue, books, market.feeRateBps, targetBetUsdc, profile);
+      if (!edge) return;
+    }
+  }
+
   // Per-side cost cap: each side's total cost in the window cannot exceed MAX_ROUND_LOSS_USDC.
   // This prevents over-investment even when hedging makes the combined worst-case small.
-  const currentRisk = summarizeRoundRisk(windowTrades);
   const mySideCost = edge.side === "Up" ? currentRisk.upCost : currentRisk.downCost;
   const projectedSideCost = mySideCost + targetBetUsdc;
   if (projectedSideCost > config.maxRoundLossUsdc) {
