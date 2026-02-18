@@ -1,0 +1,8 @@
+node_modules/
+.env
+.DS_Store
+
+# Runtime data
+paper-trades.json
+paper-trades.pre-*.json
+*.log

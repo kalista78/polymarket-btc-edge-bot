@@ -1,0 +1,26 @@
+{
+  "name": "polymarket",
+  "version": "1.0.0",
+  "description": "Polymarket BTC 5-min mispricing bot",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "paper": "PAPER_TRADE=true node src/index.js",
+    "live": "PAPER_TRADE=false node src/index.js",
+    "live-preflight": "PAPER_TRADE=false node live-preflight.js",
+    "debug": "LOG_LEVEL=DEBUG node src/index.js",
+    "measure-latency": "node measure-latency.js",
+    "measure-ratelimits": "node measure-ratelimits.js",
+    "analyze-paper": "node analyze-paper-trades.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@ethersproject/wallet": "^5.8.0",
+    "@polymarket/clob-client": "^5.2.3",
+    "dotenv": "^16.4.7",
+    "ws": "^8.19.0"
+  }
+}
