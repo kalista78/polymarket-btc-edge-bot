@@ -1,0 +1,8 @@
+.git
+.gitignore
+node_modules
+.env
+paper-trades.json
+paper-trades.pre-*.json
+*.log
+npm-debug.log*
