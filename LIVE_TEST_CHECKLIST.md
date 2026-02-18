@@ -18,6 +18,14 @@ SIGNATURE_TYPE=1
 FUNDER_ADDRESS=0x...
 CHAIN_ID=137
 
+# Optional for builder/relayer path (recommended via remote signer)
+BUILDER_SIGNER_URL=
+BUILDER_SIGNER_TOKEN=
+# OR local builder credentials (all 3)
+POLY_BUILDER_API_KEY=
+POLY_BUILDER_SECRET=
+POLY_BUILDER_PASSPHRASE=
+
 # Risk limits
 POSITION_SIZE_USDC=5
 LIVE_MAX_TRADES_PER_RUN=8
@@ -36,6 +44,12 @@ Expected: `Preflight passed.`
 
 - Fund `FUNDER_ADDRESS` with at least `100 USDC` on Polygon.
 - Keep `ENABLE_LIVE_ORDERS=false` until preflight is green.
+
+## Security baseline (strongly recommended)
+
+- Do not use your main wallet private key in the bot.
+- Create a dedicated bot signer wallet with only small operating funds.
+- Keep only the amount you are willing to trade in the bot funder/profile.
 
 ## 4) Arm real trading
 
@@ -56,4 +70,3 @@ npm run live
 
 - Fastest stop: `Ctrl+C`
 - Hard disable in config: set `ENABLE_LIVE_ORDERS=false`
-

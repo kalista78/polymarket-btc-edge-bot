@@ -9,6 +9,12 @@ const config = {
   funderAddress: process.env.FUNDER_ADDRESS || "",
   signatureType: parseInt(process.env.SIGNATURE_TYPE || "1", 10), // 0=EOA, 1=Proxy, 2=Gnosis
   chainId: parseInt(process.env.CHAIN_ID || "137", 10), // Polygon mainnet by default
+  // Optional builder attribution / relayer signing config
+  polyBuilderApiKey: process.env.POLY_BUILDER_API_KEY || "",
+  polyBuilderSecret: process.env.POLY_BUILDER_SECRET || "",
+  polyBuilderPassphrase: process.env.POLY_BUILDER_PASSPHRASE || "",
+  builderSignerUrl: process.env.BUILDER_SIGNER_URL || "",
+  builderSignerToken: process.env.BUILDER_SIGNER_TOKEN || "",
 
   // Strategy parameters
   edgeThreshold: parseFloat(process.env.EDGE_THRESHOLD || "0.20"),
@@ -83,6 +89,21 @@ config.validate = function () {
 
   if (this.enableLiveOrders && this.liveAcknowledge !== "I_UNDERSTAND_REAL_TRADES") {
     throw new Error('Set LIVE_ACKNOWLEDGE=I_UNDERSTAND_REAL_TRADES before enabling real orders');
+  }
+
+  const hasLocalBuilderCreds =
+    !!this.polyBuilderApiKey || !!this.polyBuilderSecret || !!this.polyBuilderPassphrase;
+  const localBuilderAllSet =
+    !!this.polyBuilderApiKey && !!this.polyBuilderSecret && !!this.polyBuilderPassphrase;
+
+  if (hasLocalBuilderCreds && !localBuilderAllSet) {
+    throw new Error(
+      "POLY_BUILDER_API_KEY/POLY_BUILDER_SECRET/POLY_BUILDER_PASSPHRASE must all be set together"
+    );
+  }
+
+  if (this.builderSignerUrl && !/^https?:\/\//.test(this.builderSignerUrl)) {
+    throw new Error("BUILDER_SIGNER_URL must start with http:// or https://");
   }
 
   if (this.liveMaxTradesPerRun <= 0) {

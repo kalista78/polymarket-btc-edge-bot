@@ -7,6 +7,34 @@ const TAG = "ORDER";
 let sdkState = null;
 let warnedLiveDisabled = false;
 
+async function buildBuilderConfig() {
+  const hasRemote = !!config.builderSignerUrl;
+  const hasLocal =
+    !!config.polyBuilderApiKey &&
+    !!config.polyBuilderSecret &&
+    !!config.polyBuilderPassphrase;
+
+  if (!hasRemote && !hasLocal) return undefined;
+
+  const { BuilderConfig } = await import("@polymarket/builder-signing-sdk");
+  if (hasRemote) {
+    return new BuilderConfig({
+      remoteBuilderConfig: {
+        url: config.builderSignerUrl,
+        token: config.builderSignerToken || undefined,
+      },
+    });
+  }
+
+  return new BuilderConfig({
+    localBuilderCreds: {
+      key: config.polyBuilderApiKey,
+      secret: config.polyBuilderSecret,
+      passphrase: config.polyBuilderPassphrase,
+    },
+  });
+}
+
 function shortAddress(addr = "") {
   if (!addr || addr.length < 12) return addr || "n/a";
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -17,6 +45,7 @@ async function loadClient() {
 
   const sdk = await import("@polymarket/clob-client");
   const wallet = new Wallet(config.privateKey);
+  const builderConfig = await buildBuilderConfig();
   const creds = {
     key: config.apiKey,
     secret: config.apiSecret,
@@ -35,10 +64,14 @@ async function loadClient() {
     config.signatureType,
     config.funderAddress || wallet.address,
     undefined,
-    true // Use CLOB server time for request signing.
+    true, // Use CLOB server time for request signing.
+    builderConfig
   );
 
-  sdkState = { sdk, wallet, client };
+  const builderType = builderConfig?.getBuilderType
+    ? builderConfig.getBuilderType()
+    : "UNAVAILABLE";
+  sdkState = { sdk, wallet, client, builderType };
   return sdkState;
 }
 
@@ -70,11 +103,20 @@ async function runLivePreflight() {
       report.checks.geoblock = { error: err.message };
     }
 
-    const { sdk, wallet, client } = await loadClient();
+    const { sdk, wallet, client, builderType } = await loadClient();
     report.checks.signer = wallet.address;
     report.checks.funder = config.funderAddress || wallet.address;
     report.checks.signatureType = config.signatureType;
     report.checks.chainId = config.chainId;
+    report.checks.builderSigning = {
+      type: builderType,
+      remoteSigner: !!config.builderSignerUrl,
+      localCreds: !!(
+        config.polyBuilderApiKey &&
+        config.polyBuilderSecret &&
+        config.polyBuilderPassphrase
+      ),
+    };
 
     const serverTime = await client.getServerTime();
     report.checks.serverTime = serverTime;
@@ -129,7 +171,7 @@ async function placeOrder({ tokenId, price, size, usdcAmount, side }) {
   }
 
   try {
-    const { sdk, client, wallet } = await loadClient();
+    const { sdk, client, wallet, builderType } = await loadClient();
     const amount = Number.isFinite(usdcAmount) && usdcAmount > 0 ? usdcAmount : (price * size);
 
     log.trade(TAG, `LIVE ORDER: BUY ${side}`, {
@@ -140,6 +182,7 @@ async function placeOrder({ tokenId, price, size, usdcAmount, side }) {
       limitPrice: price.toFixed(3),
       estShares: size.toFixed(2),
       type: sdk.OrderType.FOK,
+      builderSigning: builderType,
     });
 
     const data = await client.createAndPostMarketOrder(
