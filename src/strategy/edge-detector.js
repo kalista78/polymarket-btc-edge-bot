@@ -4,11 +4,14 @@ const log = require("../utils/logger");
 const TAG = "EDGE";
 
 /**
- * Conservative quote-equivalent taker fee estimate per share.
- * Based on Polymarket docs: fee scales with min(price, 1-price).
+ * Polymarket taker fee per share.
+ * Crypto 5-min/15-min markets: feeRate=0.25, exponent=2
+ * Formula: price × feeRate × (price × (1-price))^exponent
+ * Max effective rate ~1.56% at p=0.50, drops to ~0.33% at p=0.30
  */
 function calculateFee(price, feeRateBps) {
-  return price * (1 - price) * feeRateBps / 10000;
+  if (!feeRateBps || feeRateBps === 0) return 0;
+  return price * 0.25 * Math.pow(price * (1 - price), 2);
 }
 
 function estimateBuyFill(asks, targetBetUsdc) {
