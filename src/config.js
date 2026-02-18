@@ -35,7 +35,10 @@ const config = {
   claimSizeThreshold: parseFloat(process.env.CLAIM_SIZE_THRESHOLD || "0"),
 
   // Strategy parameters
-  priceSource: (process.env.PRICE_SOURCE || "chainlink").toLowerCase(), // chainlink | binance | auto
+  priceSource: (process.env.PRICE_SOURCE || "candle").toLowerCase(), // candle | chainlink | binance | auto
+  candlePollIntervalMs: parseInt(process.env.CANDLE_POLL_INTERVAL_MS || "5000", 10),
+  candleStaleMs: parseInt(process.env.CANDLE_STALE_MS || "15000", 10),
+  priceDriftThresholdUsd: parseFloat(process.env.PRICE_DRIFT_THRESHOLD_USD || "100"),
   priceStaleMs: parseInt(process.env.PRICE_STALE_MS || "15000", 10),
   edgeThreshold: parseFloat(process.env.EDGE_THRESHOLD || "0.20"),
   positionSizeUsdc: parseFloat(process.env.POSITION_SIZE_USDC || "5"),
@@ -232,8 +235,20 @@ config.validate = function () {
     throw new Error("MIN_BOOK_DEPTH_USDC must be >= 0");
   }
 
-  if (!["chainlink", "binance", "auto"].includes(this.priceSource)) {
-    throw new Error("PRICE_SOURCE must be one of: chainlink, binance, auto");
+  if (!["candle", "chainlink", "binance", "auto"].includes(this.priceSource)) {
+    throw new Error("PRICE_SOURCE must be one of: candle, chainlink, binance, auto");
+  }
+
+  if (this.candlePollIntervalMs < 2000 || this.candlePollIntervalMs > 30000) {
+    throw new Error("CANDLE_POLL_INTERVAL_MS must satisfy 2000 <= value <= 30000");
+  }
+
+  if (this.candleStaleMs < 5000 || this.candleStaleMs > 60000) {
+    throw new Error("CANDLE_STALE_MS must satisfy 5000 <= value <= 60000");
+  }
+
+  if (this.priceDriftThresholdUsd < 0) {
+    throw new Error("PRICE_DRIFT_THRESHOLD_USD must be >= 0");
   }
 
   if (this.priceStaleMs < 1000 || this.priceStaleMs > 120000) {

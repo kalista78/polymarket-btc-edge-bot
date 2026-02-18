@@ -175,7 +175,7 @@ function applyChainlinkConfirmation(fairValue, { currentPrice, startPrice, chain
   };
 
   // If model input is already Chainlink/Polymarket-native, do not self-confirm/boost it.
-  if (currentPriceSource === "chainlink") {
+  if (currentPriceSource === "chainlink" || currentPriceSource === "candle") {
     if (Number.isFinite(currentPrice) && Number.isFinite(startPrice) && startPrice > 0) {
       result.chainlinkMoveBps = +(((currentPrice - startPrice) / startPrice) * 10000).toFixed(2);
     }
@@ -531,7 +531,10 @@ async function main() {
   log.info(TAG, `Bet size: base $${BASE_BET_SIZE.toFixed(2)} | adaptive ${config.adaptiveSizingEnabled ? "ON" : "OFF"} (${config.minPositionSizeUsdc}-${config.maxPositionSizeUsdc})`);
   log.info(TAG, `Same-window re-entry min price delta: $${config.sameWindowMinPriceDelta.toFixed(2)}`);
   log.info(TAG, `Late-window mode: ${config.lateWindowEnabled ? "ON" : "OFF"} (${config.lateWindowMinTimeSec}-${config.lateWindowMaxTimeSec}s, z>=${config.lateWindowMinZScore})`);
-  log.info(TAG, `Price source: ${config.priceSource.toUpperCase()} (signal + volatility)`);
+  const priceSourceLabel = config.priceSource === "candle"
+    ? "CANDLE (Polymarket API close = resolution price)"
+    : `${config.priceSource.toUpperCase()} (signal + volatility)`;
+  log.info(TAG, `Price source: ${priceSourceLabel}`);
   log.info(TAG, `Chainlink confirm: ${config.chainlinkConfirmEnabled ? "ON" : "OFF"}`);
   log.info(TAG, `Vol regime: ${config.volRegimeEnabled ? "ON" : "OFF"} (high>${config.volHighMultiplier}x, low<${config.volLowMultiplier}x median sigma)`);
   log.info(TAG, `Execution: ${config.executionOrderType} + repriceSteps=${config.executionMaxRepriceSteps} step=${config.executionRepriceStep.toFixed(3)}`);
@@ -576,6 +579,7 @@ async function main() {
     if (windowCheckInterval) clearInterval(windowCheckInterval);
     if (telegram) telegram.stopPolling();
     if (autoClaimer) autoClaimer.stop();
+    priceTracker.stopCandlePolling();
     rtds.close();
     saveTrades(tradesData);
 
@@ -668,6 +672,11 @@ async function main() {
   }
 
   rtds.connect();
+
+  // Start candle polling (Polymarket's own chainlink-candles = resolution source of truth)
+  if (config.priceSource === "candle" || config.priceSource === "auto") {
+    priceTracker.startCandlePolling();
+  }
 
   log.info(TAG, "Waiting for price data...");
   await new Promise((resolve) => {

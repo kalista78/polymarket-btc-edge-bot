@@ -24,6 +24,12 @@ class PriceTracker {
     this._volCacheWindowTs = null;
     this._lastVolDetails = null;
 
+    // Candle-polled price (Polymarket's own Chainlink candle close = resolution price)
+    this.currentCandlePrice = null;
+    this.lastCandlePollTs = 0;
+    this._candlePollTimer = null;
+    this._candlePollFailCount = 0;
+
     // Track which windows we've already fetched
     this._fetchedWindows = new Set();
     this._fetchingWindows = new Set();
@@ -199,14 +205,123 @@ class PriceTracker {
     }
   }
 
+  /**
+   * Start continuous polling of chainlink-candles API.
+   * The current window's close value IS the price Polymarket uses for resolution.
+   */
+  startCandlePolling(intervalMs = config.candlePollIntervalMs) {
+    this.stopCandlePolling();
+    this._pollCandles(); // immediate first poll
+    this._candlePollTimer = setInterval(() => this._pollCandles(), intervalMs);
+    log.info(TAG, `Candle polling started (every ${intervalMs}ms)`);
+  }
+
+  stopCandlePolling() {
+    if (this._candlePollTimer) {
+      clearInterval(this._candlePollTimer);
+      this._candlePollTimer = null;
+    }
+  }
+
+  async _pollCandles() {
+    try {
+      const res = await fetch(
+        "https://polymarket.com/api/chainlink-candles?symbol=BTC&interval=5m&limit=5",
+        { headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" } }
+      );
+
+      if (!res.ok) {
+        this._candlePollFailCount++;
+        if (this._candlePollFailCount >= 3) {
+          log.warn(TAG, `Candle poll failed ${this._candlePollFailCount}x (HTTP ${res.status})`);
+        }
+        return;
+      }
+
+      const data = await res.json();
+      const candles = data.candles || [];
+      this._candlePollFailCount = 0;
+
+      const currentWindowTs = this.getCurrentWindowTs();
+
+      for (const candle of candles) {
+        if (!this.startPrices.has(candle.time)) {
+          this.startPrices.set(candle.time, candle.open);
+          this._fetchedWindows.add(candle.time);
+        }
+        this.windowCandles.set(candle.time, {
+          open: Number(candle.open),
+          close: Number(candle.close),
+        });
+
+        // Current active window's close = live resolution price
+        if (candle.time === currentWindowTs) {
+          const newPrice = Number(candle.close);
+          if (Number.isFinite(newPrice) && newPrice > 0) {
+            const prevPrice = this.currentCandlePrice;
+            this.currentCandlePrice = newPrice;
+            this.lastCandlePollTs = Date.now();
+
+            if (prevPrice !== null && prevPrice !== newPrice) {
+              log.debug(TAG, `Candle price updated: $${prevPrice.toFixed(2)} -> $${newPrice.toFixed(2)}`);
+            }
+          }
+        }
+      }
+
+      // Drift detection: candle vs RTDS Chainlink
+      if (
+        config.priceDriftThresholdUsd > 0 &&
+        Number.isFinite(this.currentCandlePrice) &&
+        Number.isFinite(this.currentChainlinkPrice) &&
+        this.lastChainlinkTs > 0
+      ) {
+        const drift = Math.abs(this.currentCandlePrice - this.currentChainlinkPrice);
+        if (drift > config.priceDriftThresholdUsd) {
+          log.warn(
+            TAG,
+            `PRICE DRIFT: candle=$${this.currentCandlePrice.toFixed(2)} vs RTDS=$${this.currentChainlinkPrice.toFixed(2)} (diff=$${drift.toFixed(2)})`
+          );
+        }
+      }
+
+      // Clean old entries
+      if (this.startPrices.size > 10) {
+        const keys = [...this.startPrices.keys()].sort((a, b) => a - b);
+        for (let i = 0; i < keys.length - 10; i++) {
+          this.startPrices.delete(keys[i]);
+        }
+      }
+      if (this.windowCandles.size > 20) {
+        const keys = [...this.windowCandles.keys()].sort((a, b) => a - b);
+        for (let i = 0; i < keys.length - 20; i++) {
+          this.windowCandles.delete(keys[i]);
+        }
+      }
+    } catch (err) {
+      this._candlePollFailCount++;
+      if (this._candlePollFailCount >= 3) {
+        log.error(TAG, `Candle poll error (${this._candlePollFailCount}x): ${err.message}`);
+      }
+    }
+  }
+
+  getCandlePrice() {
+    return this.currentCandlePrice;
+  }
+
   getCurrentPrice() {
     const source = this.getCurrentPriceSource();
+    if (source === "candle") return this.currentCandlePrice;
     if (source === "chainlink") return this.currentChainlinkPrice;
     if (source === "binance") return this.currentBinancePrice;
     return null;
   }
 
   getCurrentPriceSource() {
+    const candleFresh = Number.isFinite(this.currentCandlePrice) &&
+      this.lastCandlePollTs > 0 &&
+      (Date.now() - this.lastCandlePollTs) <= config.candleStaleMs;
     const chainlinkFresh = Number.isFinite(this.currentChainlinkPrice) &&
       this.lastChainlinkTs > 0 &&
       (Date.now() - this.lastChainlinkTs) <= config.priceStaleMs;
@@ -214,6 +329,13 @@ class PriceTracker {
       this.lastBinanceTs > 0 &&
       (Date.now() - this.lastBinanceTs) <= config.priceStaleMs;
 
+    if (config.priceSource === "candle") {
+      if (candleFresh) return "candle";
+      // Fallback: RTDS Chainlink, then Binance
+      if (chainlinkFresh) return "chainlink";
+      if (binanceFresh) return "binance";
+      return "none";
+    }
     if (config.priceSource === "chainlink") {
       return chainlinkFresh ? "chainlink" : "none";
     }
@@ -221,7 +343,8 @@ class PriceTracker {
       return binanceFresh ? "binance" : "none";
     }
 
-    // auto mode: prefer Chainlink (Polymarket-native), fallback to Binance.
+    // auto mode: candle (resolution-native) > Chainlink RTDS > Binance.
+    if (candleFresh) return "candle";
     if (chainlinkFresh) return "chainlink";
     if (binanceFresh) return "binance";
     return "none";
@@ -268,6 +391,11 @@ class PriceTracker {
   }
 
   getVolatilitySeries() {
+    if (config.priceSource === "candle") {
+      // Candle polls at 5s intervals — too sparse for micro-vol.
+      // Use Binance RTDS ticks (most granular, sub-second) for volatility.
+      return { source: "binance", prices: this.binancePrices };
+    }
     if (config.priceSource === "chainlink") {
       return { source: "chainlink", prices: this.chainlinkPrices };
     }
@@ -275,7 +403,10 @@ class PriceTracker {
       return { source: "binance", prices: this.binancePrices };
     }
 
-    // auto mode: prefer Chainlink if we have enough points for realized vol.
+    // auto mode: prefer Binance for vol (most data points).
+    if (this.binancePrices.length >= 5) {
+      return { source: "binance", prices: this.binancePrices };
+    }
     if (this.chainlinkPrices.length >= 5) {
       return { source: "chainlink", prices: this.chainlinkPrices };
     }
