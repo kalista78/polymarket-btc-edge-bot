@@ -16,6 +16,15 @@ const config = {
   builderSignerUrl: process.env.BUILDER_SIGNER_URL || "",
   builderSignerToken: process.env.BUILDER_SIGNER_TOKEN || "",
 
+  // Reporting / control
+  startingBalanceUsdc: parseFloat(process.env.STARTING_BALANCE_USDC || "0"),
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
+  telegramChatId: process.env.TELEGRAM_CHAT_ID || "",
+  telegramAllowFirstChat: process.env.TELEGRAM_ALLOW_FIRST_CHAT === "true",
+  telegramPollIntervalMs: parseInt(process.env.TELEGRAM_POLL_INTERVAL_MS || "3000", 10),
+  telegramNotifyEntries: process.env.TELEGRAM_NOTIFY_ENTRIES !== "false",
+  telegramNotifyResolutions: process.env.TELEGRAM_NOTIFY_RESOLUTIONS !== "false",
+
   // Strategy parameters
   edgeThreshold: parseFloat(process.env.EDGE_THRESHOLD || "0.20"),
   positionSizeUsdc: parseFloat(process.env.POSITION_SIZE_USDC || "5"),
@@ -104,6 +113,20 @@ config.validate = function () {
 
   if (this.builderSignerUrl && !/^https?:\/\//.test(this.builderSignerUrl)) {
     throw new Error("BUILDER_SIGNER_URL must start with http:// or https://");
+  }
+
+  if (this.startingBalanceUsdc < 0) {
+    throw new Error("STARTING_BALANCE_USDC must be >= 0");
+  }
+
+  if (this.telegramPollIntervalMs < 1000) {
+    throw new Error("TELEGRAM_POLL_INTERVAL_MS must be >= 1000");
+  }
+
+  if (this.telegramBotToken && !this.telegramChatId && !this.telegramAllowFirstChat) {
+    throw new Error(
+      "Set TELEGRAM_CHAT_ID or TELEGRAM_ALLOW_FIRST_CHAT=true when TELEGRAM_BOT_TOKEN is set"
+    );
   }
 
   if (this.liveMaxTradesPerRun <= 0) {

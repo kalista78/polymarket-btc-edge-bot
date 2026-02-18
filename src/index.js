@@ -10,6 +10,7 @@ const { detectEdge } = require("./strategy/edge-detector");
 const MarketDiscovery = require("./execution/market-discovery");
 const { fetchBothBooks } = require("./execution/orderbook");
 const { placeOrder } = require("./execution/order");
+const TelegramBot = require("./integrations/telegram");
 
 const TAG = "MAIN";
 const BET_SIZE = config.positionSizeUsdc;
@@ -60,6 +61,8 @@ let tradesData;
 let dailyLossLockout = false;
 let liveTradesSubmitted = 0;
 let liveNotionalSubmitted = 0;
+let tradingPaused = false;
+let telegram = null;
 
 function getTodayRealizedPnl() {
   if (!tradesData || !Array.isArray(tradesData.trades)) return 0;
@@ -67,6 +70,42 @@ function getTodayRealizedPnl() {
   return tradesData.trades
     .filter((t) => t.resolved && typeof t.resolvedAt === "string" && t.resolvedAt.startsWith(today))
     .reduce((s, t) => s + (Number(t.pnl) || 0), 0);
+}
+
+function getSummarySnapshot() {
+  const summary = tradesData?.summary || {};
+  const openPositions = tradesData?.trades?.filter((t) => !t.resolved).length || 0;
+  const realizedPnl = Number(summary.totalPnl || 0);
+  const totalBalance = +(config.startingBalanceUsdc + realizedPnl).toFixed(2);
+  return {
+    summary,
+    openPositions,
+    realizedPnl,
+    totalBalance,
+  };
+}
+
+async function notifyTelegram(text) {
+  if (!telegram) return;
+  await telegram.sendMessage(text);
+}
+
+function formatStatusMessage(currentPrice) {
+  const { summary, openPositions, realizedPnl, totalBalance } = getSummarySnapshot();
+  const mode = config.paperTrade ? "PAPER" : "LIVE";
+  const state = tradingPaused ? "PAUSED" : "RUNNING";
+  const price = Number.isFinite(currentPrice) ? `$${currentPrice.toFixed(2)}` : "N/A";
+  return [
+    `Polymarket Bot Status`,
+    `Mode: ${mode} (${state})`,
+    `BTC: ${price}`,
+    `Resolved: ${summary.resolved || 0}/${summary.totalTrades || 0}`,
+    `Open positions: ${openPositions}`,
+    `Realized PnL: $${realizedPnl.toFixed(2)}`,
+    `Total balance: $${totalBalance.toFixed(2)}`,
+    `Win rate: ${(summary.winRate || 0).toFixed(1)}%`,
+    `ROI: ${(summary.roi || 0).toFixed(1)}%`,
+  ].join("\n");
 }
 
 async function main() {
@@ -98,6 +137,72 @@ async function main() {
   rtds.on("chainlink-price", (data) => priceTracker.onChainlinkPrice(data));
 
   let lastWindowTs = null;
+  let edgeCheckInterval = null;
+  let windowCheckInterval = null;
+  let shuttingDown = false;
+
+  const shutdown = async (source = "signal") => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    log.info(TAG, `Shutting down... source=${source}`);
+    if (edgeCheckInterval) clearInterval(edgeCheckInterval);
+    if (windowCheckInterval) clearInterval(windowCheckInterval);
+    if (telegram) telegram.stopPolling();
+    rtds.close();
+    saveTrades(tradesData);
+
+    log.info(TAG, `Saved ${tradesData.trades.length} trades to ${path.basename(TRADES_FILE)}`);
+    if (!config.paperTrade) {
+      log.info(
+        TAG,
+        `Live order usage: ${liveTradesSubmitted}/${config.liveMaxTradesPerRun} trades, $${liveNotionalSubmitted.toFixed(2)}/$${config.liveMaxNotionalUsdc} notional`
+      );
+    }
+    log.info(TAG, `Summary: ${JSON.stringify(tradesData.summary)}`);
+
+    await notifyTelegram(`Bot stopped (${source}).\n${formatStatusMessage(priceTracker.getCurrentPrice())}`);
+    process.exit(0);
+  };
+
+  if (config.telegramBotToken) {
+    telegram = new TelegramBot({
+      token: config.telegramBotToken,
+      chatId: config.telegramChatId,
+      allowFirstChat: config.telegramAllowFirstChat,
+      pollIntervalMs: config.telegramPollIntervalMs,
+    });
+
+    await telegram.startPolling(async ({ command }) => {
+      if (command === "/help") {
+        await notifyTelegram(
+          "Commands:\n/status - current status\n/stop - pause new entries\n/resume - resume entries\n/start - alias of /resume\n/balance - PnL and balance"
+        );
+        return;
+      }
+
+      if (command === "/status" || command === "/balance") {
+        await notifyTelegram(formatStatusMessage(priceTracker.getCurrentPrice()));
+        return;
+      }
+
+      if (command === "/stop" || command === "/pause") {
+        tradingPaused = true;
+        await notifyTelegram(`Trading paused.\n${formatStatusMessage(priceTracker.getCurrentPrice())}`);
+        return;
+      }
+
+      if (command === "/resume" || command === "/start") {
+        tradingPaused = false;
+        await notifyTelegram(`Trading resumed.\n${formatStatusMessage(priceTracker.getCurrentPrice())}`);
+        return;
+      }
+    });
+
+    log.info(TAG, "Telegram integration enabled");
+  } else {
+    log.info(TAG, "Telegram integration disabled");
+  }
 
   rtds.connect();
 
@@ -116,7 +221,7 @@ async function main() {
   await priceTracker.fetchStartPrice(windowNow);
   log.info(TAG, "Starting main loop...");
 
-  const edgeCheckInterval = setInterval(async () => {
+  edgeCheckInterval = setInterval(async () => {
     try {
       await tick(priceTracker, marketDiscovery);
     } catch (err) {
@@ -126,7 +231,7 @@ async function main() {
 
   // Window transition check (every 1s) — use sync guard to prevent duplicate fires
   let transitionInProgress = false;
-  const windowCheckInterval = setInterval(async () => {
+  windowCheckInterval = setInterval(async () => {
     const currentWindowTs = priceTracker.getCurrentWindowTs();
     if (lastWindowTs !== null && currentWindowTs !== lastWindowTs && !transitionInProgress) {
       transitionInProgress = true;
@@ -145,25 +250,14 @@ async function main() {
     }
   }, 1000);
 
-  const shutdown = () => {
-    log.info(TAG, "Shutting down...");
-    clearInterval(edgeCheckInterval);
-    clearInterval(windowCheckInterval);
-    rtds.close();
-    saveTrades(tradesData);
-    log.info(TAG, `Saved ${tradesData.trades.length} trades to ${path.basename(TRADES_FILE)}`);
-    if (!config.paperTrade) {
-      log.info(
-        TAG,
-        `Live order usage: ${liveTradesSubmitted}/${config.liveMaxTradesPerRun} trades, $${liveNotionalSubmitted.toFixed(2)}/$${config.liveMaxNotionalUsdc} notional`
-      );
-    }
-    log.info(TAG, `Summary: ${JSON.stringify(tradesData.summary)}`);
-    process.exit(0);
-  };
+  await notifyTelegram(`Bot started.\n${formatStatusMessage(priceTracker.getCurrentPrice())}`);
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => {
+    shutdown("SIGINT").catch((err) => log.error(TAG, `Shutdown error: ${err.message}`));
+  });
+  process.on("SIGTERM", () => {
+    shutdown("SIGTERM").catch((err) => log.error(TAG, `Shutdown error: ${err.message}`));
+  });
 }
 
 let lastTickLog = 0;
@@ -186,6 +280,8 @@ async function tick(priceTracker, marketDiscovery) {
     lastTickLog = now;
     log.info(TAG, `Status: BTC=$${currentPrice.toFixed(2)} window=${windowTs} timeLeft=${timeRemaining.toFixed(0)}s priceToBeat=${startPrice ? "$" + startPrice.toFixed(2) : "N/A"}`);
   }
+
+  if (tradingPaused) return;
 
   if (timeRemaining < config.minTimeRemainingSec) return;
 
@@ -337,6 +433,20 @@ async function tick(priceTracker, marketDiscovery) {
     tokenId: trade.tokenId,
     timestamp: Date.now(),
   });
+
+  if (config.telegramNotifyEntries) {
+    const { totalBalance, realizedPnl, openPositions } = getSummarySnapshot();
+    notifyTelegram(
+      [
+        `NEW ${config.paperTrade ? "PAPER" : "LIVE"} TRADE`,
+        `${trade.side} @ ${trade.marketPrice.toFixed(3)} | shares ${trade.shares.toFixed(2)} | cost $${trade.cost.toFixed(2)}`,
+        `Expected PnL: $${trade.expectedPnl.toFixed(3)} | Edge: ${trade.edgePct.toFixed(1)}%`,
+        `Window: ${trade.windowTs} | timeLeft: ${trade.timeRemainingSec}s`,
+        `Open positions: ${openPositions}`,
+        `Realized PnL: $${realizedPnl.toFixed(2)} | Total balance: $${totalBalance.toFixed(2)}`,
+      ].join("\n")
+    ).catch((err) => log.warn(TAG, `Telegram entry notify failed: ${err.message}`));
+  }
 }
 
 async function onWindowTransition(prevWindowTs, newWindowTs, priceTracker) {
@@ -398,6 +508,21 @@ async function onWindowTransition(prevWindowTs, newWindowTs, priceTracker) {
     }
 
     saveTrades(tradesData);
+
+    if (config.telegramNotifyResolutions) {
+      const { totalBalance, realizedPnl, summary } = getSummarySnapshot();
+      for (const trade of unresolvedTrades) {
+        notifyTelegram(
+          [
+            `CLOSED ${trade.won ? "WIN" : "LOSS"} (${config.paperTrade ? "PAPER" : "LIVE"})`,
+            `${trade.side} @ ${trade.marketPrice.toFixed(3)} -> PnL $${trade.pnl.toFixed(2)}`,
+            `Window close: ${trade.endPrice.toFixed(2)} | Outcome: ${trade.resolutionOutcome?.toUpperCase()}`,
+            `Resolved: ${summary.resolved || 0}/${summary.totalTrades || 0}`,
+            `Realized PnL: $${realizedPnl.toFixed(2)} | Total balance: $${totalBalance.toFixed(2)}`,
+          ].join("\n")
+        ).catch((err) => log.warn(TAG, `Telegram resolution notify failed: ${err.message}`));
+      }
+    }
   } else {
     log.warn(TAG, `Could not fetch resolution for window ${prevWindowTs} after retries`);
   }

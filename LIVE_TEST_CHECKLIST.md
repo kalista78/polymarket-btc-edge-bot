@@ -51,6 +51,19 @@ Expected: `Preflight passed.`
 - Create a dedicated bot signer wallet with only small operating funds.
 - Keep only the amount you are willing to trade in the bot funder/profile.
 
+## Telegram monitoring/control (optional)
+
+```env
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+TELEGRAM_ALLOW_FIRST_CHAT=false
+TELEGRAM_NOTIFY_ENTRIES=true
+TELEGRAM_NOTIFY_RESOLUTIONS=true
+STARTING_BALANCE_USDC=100
+```
+
+- Commands: `/status`, `/balance`, `/stop` (pause entries), `/resume`, `/help`.
+
 ## 4) Arm real trading
 
 Update `.env`:
