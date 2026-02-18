@@ -8,7 +8,7 @@ const TAG = "EDGE";
  * Based on Polymarket docs: fee scales with min(price, 1-price).
  */
 function calculateFee(price, feeRateBps) {
-  return Math.min(price, 1 - price) * feeRateBps / 10000;
+  return price * (1 - price) * feeRateBps / 10000;
 }
 
 function estimateBuyFill(asks, targetBetUsdc) {
