@@ -546,7 +546,7 @@ async function main() {
     TAG,
     `Risk: max ${openPosLimitLabel} open / max daily loss $${config.maxDailyLossUsdc} / max round loss $${config.maxRoundLossUsdc}`
   );
-  log.info(TAG, `Per-side cost cap: $${config.maxRoundLossUsdc} per side per round | same-side re-entry min edge: 25%`);
+  log.info(TAG, `Guards: per-side cap $${config.maxRoundLossUsdc} | same-side re-entry min 25% edge | hedge combined < $1`);
   if (!config.paperTrade) {
     log.warn(
       TAG,
@@ -890,6 +890,19 @@ async function tick(priceTracker, marketDiscovery) {
   if (sameSideTrades.length >= 1 && edge.edgePct < 0.25) {
     log.info(TAG, `Skip same-side re-entry: ${edge.side} trade #${sameSideTrades.length + 1} edge ${(edge.edgePct * 100).toFixed(1)}% < 25% min for re-entry`);
     return;
+  }
+
+  // Combined cost check: if hedging, paired shares must cost < $1 to have positive EV
+  const oppSideShares = edge.side === "Up" ? currentRisk.downShares : currentRisk.upShares;
+  const oppSideCost = edge.side === "Up" ? currentRisk.downCost : currentRisk.upCost;
+  if (oppSideShares > 0) {
+    const oppAvgPrice = oppSideCost / oppSideShares;
+    const myPrice = edge.marketPrice;
+    const combinedCost = myPrice + oppAvgPrice + calculateFee(myPrice, market.feeRateBps) + calculateFee(oppAvgPrice, market.feeRateBps);
+    if (combinedCost >= 1.0) {
+      log.info(TAG, `Skip hedge: combined cost ${combinedCost.toFixed(3)} >= $1 per pair (${edge.side} @ ${myPrice.toFixed(3)} + opp avg ${oppAvgPrice.toFixed(3)} + fees)`);
+      return;
+    }
   }
 
   // Round-level risk cap: allow gross exposure to grow only when hedged enough
