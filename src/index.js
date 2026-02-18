@@ -434,7 +434,7 @@ async function maybeTakeProfitPositions({ currentPrice }) {
       usdcAmount: shares,
       side: trade.side,
       orderSide: "SELL",
-      orderTypeOverride: "FAK",
+      orderTypeOverride: "FOK",
     });
 
     if (!exitResult || exitResult.skipped) {
