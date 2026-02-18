@@ -95,6 +95,7 @@ const config = {
   maxPositionSizeUsdc: parseFloat(process.env.MAX_POSITION_SIZE_USDC || "25"),
   adaptiveEdgeMultiplier: parseFloat(process.env.ADAPTIVE_EDGE_MULTIPLIER || "6"),
   adaptiveConfidenceMultiplier: parseFloat(process.env.ADAPTIVE_CONFIDENCE_MULTIPLIER || "0.7"),
+  hedgeMaxImbalanceRatio: parseFloat(process.env.HEDGE_MAX_IMBALANCE_RATIO || "1.5"),
   // Direction-neutral Up+Down mispricing detector
   combinedArbEnabled: process.env.COMBINED_ARB_ENABLED !== "false",
   combinedArbExecute: process.env.COMBINED_ARB_EXECUTE === "true",

@@ -546,6 +546,7 @@ async function main() {
     TAG,
     `Risk: max ${openPosLimitLabel} open / max daily loss $${config.maxDailyLossUsdc} / max round loss $${config.maxRoundLossUsdc}`
   );
+  log.info(TAG, `Hedge balance: max imbalance ratio ${config.hedgeMaxImbalanceRatio}x`);
   if (!config.paperTrade) {
     log.warn(
       TAG,
@@ -865,6 +866,27 @@ async function tick(priceTracker, marketDiscovery) {
         `Skip same-side re-entry: ${edge.side} delta ${delta.toFixed(3)} < ${config.sameWindowMinPriceDelta.toFixed(3)} (last=${lastSameSideTrade.marketPrice.toFixed(3)} now=${edge.marketPrice.toFixed(3)})`
       );
       return;
+    }
+  }
+
+  // Hedge balance: cap same-side exposure relative to opposite side
+  const oppSide = edge.side === "Up" ? "Down" : "Up";
+  const oppTrades = windowTrades.filter((t) => t.side === oppSide);
+  if (oppTrades.length > 0) {
+    const currentRisk = summarizeRoundRisk(windowTrades);
+    const myCost = edge.side === "Up" ? currentRisk.upCost : currentRisk.downCost;
+    const oppCost = edge.side === "Up" ? currentRisk.downCost : currentRisk.upCost;
+    const maxAllowed = oppCost * config.hedgeMaxImbalanceRatio;
+    const headroom = round2(maxAllowed - myCost);
+    if (headroom < config.minPositionSizeUsdc) {
+      log.info(TAG, `Skip trade by hedge balance: ${edge.side} cost $${myCost.toFixed(2)} + $${targetBetUsdc.toFixed(2)} would exceed ${config.hedgeMaxImbalanceRatio}x opp $${oppCost.toFixed(2)} (max $${maxAllowed.toFixed(2)}, headroom $${headroom.toFixed(2)})`);
+      return;
+    }
+    if (targetBetUsdc > headroom) {
+      log.info(TAG, `Shrinking ${edge.side} bet $${targetBetUsdc.toFixed(2)} -> $${headroom.toFixed(2)} for hedge balance (opp $${oppCost.toFixed(2)} × ${config.hedgeMaxImbalanceRatio} = $${maxAllowed.toFixed(2)}, myCost $${myCost.toFixed(2)})`);
+      targetBetUsdc = headroom;
+      edge = detectEdge(fairValue, books, market.feeRateBps, targetBetUsdc, profile);
+      if (!edge) return;
     }
   }
 
