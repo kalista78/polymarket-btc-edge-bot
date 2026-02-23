@@ -1,8 +1,13 @@
 node_modules/
 .env
+.env.*
+!.env.example
+.env.bak*
 .DS_Store
 
 # Runtime data
 paper-trades.json
 paper-trades.pre-*.json
+live-trades.json
 *.log
+*.log.*
